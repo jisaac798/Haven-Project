@@ -14,9 +14,11 @@ const CROP_PRICES: Array[int] = [12, 35, 100, 260]
 const SWORD_NAMES: Array[String] = ["Madera", "Piedra", "Oro", "Plata", "Diamante", "Obsidiana"]
 const SWORD_PRICES: Array[int] = [60, 140, 300, 650, 1400]
 const LIBERTY_COST := 12000
+const HOTBAR_SLOTS := 5
+const ITEM_SWORD := 4
 
 var rng := RandomNumberGenerator.new()
-var player_pos := Vector2(1800, 1160)
+var player_pos := Vector2(1700, 1230)
 var day := 1
 var night_number := 0
 var night_elapsed := 0.0
@@ -25,6 +27,10 @@ var seeds_found := 1
 var seed_counts: Array[int] = [1, 0, 0, 0]
 var produce_counts: Array[int] = [0, 0, 0, 0]
 var selected_seed := 0
+var sword_equipped := false
+var quick_slots: Array[int] = [ITEM_SWORD, 0, 1, 2, 3]
+var backpack_slots: Array[int] = [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]
+var inventory_pick := -1
 var planted: Array = []
 var pickups: Array[Dictionary] = []
 var trees: Array[Dictionary] = []
@@ -38,8 +44,12 @@ var grow_level := 0
 var life_level := 0
 var drop_level := 0
 var house_hp := 400.0
+var player_hp := 500.0
+var player_life_level := 0
 var harvest_total := 0
 var attack_cooldown := 0.0
+var sword_swing := 0.0
+var facing := Vector2(0, 1)
 var spawn_timer := 0.0
 var msg := "Empiezas con una semilla. Siembra junto a tu granja."
 var msg_timer := 6.0
@@ -59,17 +69,24 @@ var chicken_sprite: Texture2D
 var grass_texture: Texture2D
 var road_tile_texture: Texture2D
 var rock_path_texture: Texture2D
+var sword_texture: Texture2D
 var player_sprite: Sprite2D
+var sword_display: Sprite2D
 var camera: Camera2D
 var market_display: Sprite2D
 var upgrades_display: Sprite2D
 var hud: Label
+var hotbar: HBoxContainer
+var hotbar_cells: Array[PanelContainer] = []
+var ambient_music: AudioStreamPlayer
+var menu_music: AudioStreamPlayer
 var shop_open := false
 var popup_mode := ""
 var popup: PanelContainer
 var popup_title: Label
 var popup_info: Label
 var popup_buttons: VBoxContainer
+var popup_scroll: ScrollContainer
 var start_screen: ColorRect
 var splash_title: Label
 var splash_body: Label
@@ -97,6 +114,20 @@ func _ready() -> void:
 	player_sprite.scale = Vector2(2, 2)
 	player_sprite.position = player_pos
 	player_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	# El jugador se dibuja una sola vez en _draw(), ordenado por la base de cada sprite.
+	player_sprite.visible = false
+	sword_display = Sprite2D.new()
+	sword_display.texture = sword_texture
+	sword_display.region_enabled = true
+	sword_display.scale = Vector2(0.13, 0.13)
+	sword_display.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	var sword_shader := Shader.new()
+	sword_shader.code = "shader_type canvas_item;\nvoid fragment() { vec4 c = texture(TEXTURE, UV); if (c.r > 0.94 && c.g > 0.94 && c.b > 0.94) discard; COLOR = c; }"
+	var sword_material := ShaderMaterial.new()
+	sword_material.shader = sword_shader
+	sword_display.material = sword_material
+	sword_display.visible = false
+	add_child(sword_display)
 	market_display = Sprite2D.new()
 	market_display.texture = shop_sprite
 	market_display.position = MARKET_POS
@@ -121,6 +152,7 @@ func _ready() -> void:
 	right_path_points = _sample_path([Vector2(1890, 1090), Vector2(2050, 970), Vector2(2200, 1040), Vector2(2390, 850), Vector2(2550, 900), Vector2(2730, 710), Vector2(2890, 665), Vector2(2960, 650)], 31.5)
 	var layer := CanvasLayer.new()
 	add_child(layer)
+	_create_audio()
 	hud = Label.new()
 	hud.position = Vector2(14, 10)
 	hud.add_theme_font_size_override("font_size", 15)
@@ -130,6 +162,7 @@ func _ready() -> void:
 	hud.add_theme_constant_override("shadow_offset_y", 2)
 	layer.add_child(hud)
 	_create_popup(layer)
+	_create_hotbar(layer)
 	_create_splash(layer)
 	hud.visible = false
 	_show_splash("Granja Sombría", "Cuida tu granja, planta cultivos y sobrevive a las noches.", "Jugar", _start_game)
@@ -139,9 +172,9 @@ func _create_popup(layer: CanvasLayer) -> void:
 	popup = PanelContainer.new()
 	popup.set_anchors_preset(Control.PRESET_CENTER)
 	popup.offset_left = -230
-	popup.offset_top = -260
+	popup.offset_top = -270
 	popup.offset_right = 230
-	popup.offset_bottom = 260
+	popup.offset_bottom = 270
 	var panel_style := StyleBoxFlat.new()
 	panel_style.bg_color = Color("202a27")
 	panel_style.border_color = Color("d8ad66")
@@ -168,9 +201,14 @@ func _create_popup(layer: CanvasLayer) -> void:
 	popup_info.add_theme_font_size_override("font_size", 16)
 	popup_info.add_theme_color_override("font_color", Color("f0f3e9"))
 	layout.add_child(popup_info)
+	popup_scroll = ScrollContainer.new()
+	popup_scroll.custom_minimum_size = Vector2(405, 370)
+	popup_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	layout.add_child(popup_scroll)
 	popup_buttons = VBoxContainer.new()
+	popup_buttons.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	popup_buttons.add_theme_constant_override("separation", 8)
-	layout.add_child(popup_buttons)
+	popup_scroll.add_child(popup_buttons)
 
 func _create_splash(layer: CanvasLayer) -> void:
 	start_screen = ColorRect.new()
@@ -231,11 +269,71 @@ func _start_game() -> void:
 	msg = "Empiezas con una semilla de tomate y una espada de madera."
 	msg_timer = 6
 	_update_hud()
+	_refresh_hotbar()
+
+func _create_audio() -> void:
+	ambient_music = AudioStreamPlayer.new()
+	ambient_music.stream = load("res://assets/Audio/Envioroment_sound.ogg")
+	ambient_music.volume_db = -15.0
+	if ambient_music.stream is AudioStreamOggVorbis:
+		(ambient_music.stream as AudioStreamOggVorbis).loop = true
+	add_child(ambient_music)
+	if ambient_music.stream:
+		ambient_music.play()
+	menu_music = AudioStreamPlayer.new()
+	menu_music.stream = load("res://assets/Audio/Menu_sound.ogg")
+	menu_music.volume_db = -10.0
+	add_child(menu_music)
+
+func _create_hotbar(layer: CanvasLayer) -> void:
+	hotbar = HBoxContainer.new()
+	hotbar.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	hotbar.offset_left = -205
+	hotbar.offset_top = -70
+	hotbar.offset_right = 205
+	hotbar.offset_bottom = -12
+	hotbar.add_theme_constant_override("separation", 5)
+	layer.add_child(hotbar)
+	for i in range(HOTBAR_SLOTS):
+		var cell := PanelContainer.new()
+		cell.custom_minimum_size = Vector2(78, 58)
+		var label := Label.new()
+		label.name = "Label"
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		label.add_theme_font_size_override("font_size", 12)
+		cell.add_child(label)
+		hotbar.add_child(cell)
+		hotbar_cells.append(cell)
+	_refresh_hotbar()
+
+func _refresh_hotbar() -> void:
+	if hotbar_cells.is_empty(): return
+	for i in range(hotbar_cells.size()):
+		var cell := hotbar_cells[i]
+		var item := quick_slots[i]
+		var selected := (item == ITEM_SWORD and sword_equipped) or (item >= 0 and item == selected_seed and not sword_equipped)
+		var style := StyleBoxFlat.new()
+		style.bg_color = Color("303735") if item >= 0 else Color("1c211f")
+		style.border_color = Color("ffe18a") if selected else Color("8d7652")
+		style.set_border_width_all(3 if selected else 2)
+		style.set_corner_radius_all(4)
+		cell.add_theme_stylebox_override("panel", style)
+		var label: Label = cell.get_node("Label")
+		if item == ITEM_SWORD:
+			label.text = "%d  ESPADA\n%s" % [i + 1, SWORD_NAMES[sword_level]]
+		elif item >= 0:
+			label.text = "%d  %s\nx%d" % [i + 1, SEED_NAMES[item], seed_counts[item]]
+		else:
+			label.text = "%d\nVacío" % (i + 1)
 
 func _show_popup(mode: String) -> void:
 	popup_mode = mode
 	shop_open = true
 	popup.visible = true
+	if mode in ["sell", "upgrade", "seeds"] and menu_music and menu_music.stream:
+		menu_music.play()
 	_refresh_popup()
 
 func _refresh_popup() -> void:
@@ -251,13 +349,14 @@ func _refresh_popup() -> void:
 			_add_popup_button("Vender %s x%d  ·  %d monedas" % [SEED_NAMES[i], count, count * CROP_PRICES[i]], _sell_crop.bind(i), count <= 0)
 	elif popup_mode == "upgrade":
 		popup_title.text = "Tienda de mejoras"
-		popup_info.text = "Monedas: %d   ·   Espada: %s" % [coins, SWORD_NAMES[sword_level]]
+		popup_info.text = "Monedas: %d   ·   Espada: %s   ·   Vida: %d/%d" % [coins, SWORD_NAMES[sword_level], int(player_hp), int(_max_player_hp())]
 		_add_popup_button("1  ·  Más vida para la granja  (%d)" % (40 + life_level * 45), _buy_fence)
 		if sword_level < 5:
 			_add_popup_button("2  ·  Espada de %s  (%d)" % [SWORD_NAMES[sword_level + 1], SWORD_PRICES[sword_level]], _buy_sword)
 		else:
 			_add_popup_button("2  ·  Espada de obsidiana (máximo)", _buy_sword, true)
 		_add_popup_button("3  ·  Más semillas de enemigos  (%d)" % (50 + drop_level * 55), _buy_growth)
+		_add_popup_button("Más vida para el jugador  (%d)" % (75 + player_life_level * 70), _buy_player_life)
 		_add_popup_button("Semillas raras", _show_popup.bind("seeds"))
 		_add_popup_button("libertad?  ·  %d monedas" % LIBERTY_COST, _buy_freedom)
 	elif popup_mode == "seeds":
@@ -267,10 +366,11 @@ func _refresh_popup() -> void:
 			_add_popup_button("%s · %s  (%d)  · tienes %d" % [SEED_NAMES[i], SEED_RARITY[i], SEED_PRICES[i], seed_counts[i]], _buy_seed.bind(i))
 	else:
 		popup_title.text = "Inventario"
-		popup_info.text = "Espada equipada: %s\nMonedas: %d\nSemillas encontradas: %d  ·  Próxima caída: 1/%d" % [SWORD_NAMES[sword_level], coins, seeds_found, _seed_drop_denominator()]
-		for i in range(4):
-			var selected := "  ✓ equipada" if selected_seed == i else ""
-			_add_popup_button("Semilla %s x%d%s  ·  Plantaciones %d" % [SEED_NAMES[i], seed_counts[i], selected, produce_counts[i]], _select_seed.bind(i), seed_counts[i] <= 0)
+		popup_info.text = "Barra rápida abajo · mochila al presionar I.\nElige un espacio y luego otro para intercambiarlos.  Monedas: %d" % coins
+		for i in range(HOTBAR_SLOTS):
+			_add_inventory_slot_button(i, true)
+		for i in range(backpack_slots.size()):
+			_add_inventory_slot_button(i, false)
 	var close_button := Button.new()
 	close_button.text = "Cerrar  ·  Esc"
 	close_button.pressed.connect(_close_popup)
@@ -283,6 +383,41 @@ func _add_popup_button(caption: String, callback: Callable, disabled: bool = fal
 	button.disabled = disabled
 	button.pressed.connect(callback)
 	popup_buttons.add_child(button)
+
+func _item_caption(item: int) -> String:
+	if item == ITEM_SWORD: return "Espada: %s" % SWORD_NAMES[sword_level]
+	if item >= 0: return "%s x%d · cultivos x%d" % [SEED_NAMES[item], seed_counts[item], produce_counts[item]]
+	return "Vacío"
+
+func _add_inventory_slot_button(slot: int, is_quick: bool) -> void:
+	var item := quick_slots[slot] if is_quick else backpack_slots[slot]
+	var index := slot if is_quick else HOTBAR_SLOTS + slot
+	var marker := "  ← elige destino" if inventory_pick == index else ""
+	var place := "Barra %d" % (slot + 1) if is_quick else "Mochila %d" % (slot + 1)
+	_add_popup_button("%s: %s%s" % [place, _item_caption(item), marker], _inventory_slot_pressed.bind(index))
+
+func _inventory_slot_pressed(index: int) -> void:
+	if inventory_pick < 0:
+		inventory_pick = index
+		_refresh_popup()
+		return
+	if inventory_pick == index:
+		inventory_pick = -1
+		_refresh_popup()
+		return
+	var first_item := _get_inventory_slot(inventory_pick)
+	_set_inventory_slot(inventory_pick, _get_inventory_slot(index))
+	_set_inventory_slot(index, first_item)
+	inventory_pick = -1
+	_refresh_hotbar()
+	_refresh_popup()
+
+func _get_inventory_slot(index: int) -> int:
+	return quick_slots[index] if index < HOTBAR_SLOTS else backpack_slots[index - HOTBAR_SLOTS]
+
+func _set_inventory_slot(index: int, item: int) -> void:
+	if index < HOTBAR_SLOTS: quick_slots[index] = item
+	else: backpack_slots[index - HOTBAR_SLOTS] = item
 
 func _sell_crop(seed_id: int) -> void:
 	var sold: int = produce_counts[seed_id]
@@ -301,6 +436,7 @@ func _buy_seed(seed_id: int) -> void:
 		msg = "Compraste una semilla de %s." % SEED_NAMES[seed_id]
 	else: msg = "Necesitas %d monedas para esa semilla." % SEED_PRICES[seed_id]
 	msg_timer = 3
+	_refresh_hotbar()
 	_refresh_popup()
 
 func _select_seed(seed_id: int) -> void:
@@ -321,6 +457,7 @@ func _buy_freedom() -> void:
 func _close_popup() -> void:
 	shop_open = false
 	popup_mode = ""
+	inventory_pick = -1
 	popup.visible = false
 
 func _load_art() -> void:
@@ -331,6 +468,7 @@ func _load_art() -> void:
 		var p := "res://assets/Character/Walk_%02d.png" % i
 		if ResourceLoader.exists(p): walk_frames.append(load(p))
 	farm_sheet = load("res://assets/Objects/Spring Crops.png")
+	sword_texture = load("res://assets/Objects/Espadas.png")
 	house_sprite = load("res://assets/Objects/House_03.png")
 	tree_sprite = load("res://assets/Objects/Maple Tree_01.png")
 	fence_sprite = load("res://assets/Objects/Fence's copiar_01.png")
@@ -340,7 +478,7 @@ func _load_art() -> void:
 	orc_walk = load("res://assets/Enemies/Orc_Walk.png")
 	soldier_walk = load("res://assets/Enemies/Soldier_Walk.png")
 	chicken_sprite = load("res://assets/Farm Animals/Baby Chicken Yellow_01.png")
-	grass_texture = load("res://assets/Objects/Grass Ground.png")
+	grass_texture = load("res://assets/Objects/Grass Mundo.png")
 
 func _sample_path(points: Array, spacing: float) -> PackedVector2Array:
 	var samples := PackedVector2Array()
@@ -376,10 +514,15 @@ func _generate_world() -> void:
 				break
 		if crowded: continue
 		trees.append({"pos": p, "scale": rng.randf_range(1.5, 2.0)})
-	# Muro forestal sólido al final del mapa: cinco filas de troncos/árboles.
-	for col in range(6):
-		for row in range(0, int(WORLD.y / 34.0)):
-			trees.append({"pos": Vector2(WORLD.x - 185 + col * 32, 18 + row * 34), "scale": 1.7})
+	# Bosque sólido en los cuatro extremos: es el borde real del mundo.
+	for edge_x in range(5):
+		for row in range(-1, int(WORLD.y / 34.0) + 2):
+			trees.append({"pos": Vector2(42 + edge_x * 31, 18 + row * 34), "scale": 1.7})
+			trees.append({"pos": Vector2(WORLD.x - 42 - edge_x * 31, 18 + row * 34), "scale": 1.7})
+	for edge_y in range(5):
+		for col in range(2, int(WORLD.x / 34.0) - 2):
+			trees.append({"pos": Vector2(18 + col * 34, 42 + edge_y * 31), "scale": 1.7})
+			trees.append({"pos": Vector2(18 + col * 34, WORLD.y - 42 - edge_y * 31), "scale": 1.7})
 	queue_redraw()
 
 func _near_path(point: Vector2, points: Array, clearance: float) -> bool:
@@ -399,6 +542,7 @@ func _process(delta: float) -> void:
 			night_elapsed = 0
 			day += 1
 			enemies.clear()
+			player_hp = _max_player_hp()
 			for crop_index in range(planted.size()):
 				if planted[crop_index] != null:
 					planted[crop_index].growth = minf(7.0, planted[crop_index].growth + 1.0)
@@ -408,10 +552,15 @@ func _process(delta: float) -> void:
 		house_hp = minf(_max_house_hp(), house_hp + delta * 1.25)
 	if not shop_open: _move_player(delta)
 	camera.position = player_pos
+	_update_sword_display()
 	attack_cooldown = maxf(0, attack_cooldown - delta)
+	sword_swing = maxf(0, sword_swing - delta)
 	msg_timer = maxf(0, msg_timer - delta)
 	if not shop_open and Input.is_key_pressed(KEY_SPACE) and attack_cooldown == 0:
-		_attack()
+		if sword_equipped: _attack()
+		else:
+			msg = "Equipa la espada con la tecla 1 antes de atacar."
+			msg_timer = 1.4
 	_animate_player()
 	var night_tint := Color(0.48, 0.52, 0.66) if is_night else Color.WHITE
 	market_display.modulate = night_tint
@@ -424,6 +573,16 @@ func _input(event: InputEvent) -> void:
 	if not started or game_over: return
 	if event.keycode == KEY_I and not shop_open:
 		_show_popup("inventory")
+		return
+	if event.keycode >= KEY_1 and event.keycode <= KEY_5 and not shop_open:
+		_select_hotbar_slot(event.keycode - KEY_1)
+		return
+	if event.keycode == KEY_0 and not shop_open:
+		sword_equipped = false
+		msg = "Manos vacías."
+		msg_timer = 2
+		_refresh_hotbar()
+		_update_sword_display()
 		return
 	if event.keycode == KEY_Q and not shop_open:
 		_cycle_seed()
@@ -444,33 +603,70 @@ func _input(event: InputEvent) -> void:
 			elif event.keycode == KEY_4: _buy_seed(3)
 
 func _cycle_seed() -> void:
-	for offset in range(1, 5):
-		var candidate := (selected_seed + offset) % 4
-		if seed_counts[candidate] > 0:
-			selected_seed = candidate
-			msg = "Semilla seleccionada: %s." % SEED_NAMES[candidate]
-			msg_timer = 2
-			return
+	for offset in range(1, HOTBAR_SLOTS + 1):
+		var slot := (quick_slots.find(selected_seed) + offset) % HOTBAR_SLOTS
+		_select_hotbar_slot(slot, false)
+		if quick_slots[slot] >= 0 and quick_slots[slot] != ITEM_SWORD and seed_counts[quick_slots[slot]] > 0: return
+
+func _select_hotbar_slot(slot: int, announce: bool = true) -> void:
+	var item := quick_slots[slot]
+	if item < 0: return
+	if item == ITEM_SWORD:
+		sword_equipped = true
+		msg = "Espada equipada: %s." % SWORD_NAMES[sword_level]
+	else:
+		sword_equipped = false
+		selected_seed = item
+		msg = "Semilla seleccionada: %s." % SEED_NAMES[item]
+	if announce: msg_timer = 2
+	_refresh_hotbar()
+	_update_sword_display()
+
+func _update_sword_display() -> void:
+	if sword_display == null: return
+	sword_display.visible = sword_equipped and sword_texture != null
+	if not sword_display.visible: return
+	var direction := facing.normalized()
+	var angle := direction.angle()
+	var swing_progress := 1.0 - sword_swing / 0.24
+	var swing_angle := lerpf(-0.7, 0.8, clampf(swing_progress, 0.0, 1.0)) if sword_swing > 0 else 0.0
+	sword_display.position = player_pos + direction * 17.0 + Vector2(0, -8)
+	sword_display.rotation = angle + swing_angle - 0.7
+	sword_display.scale = Vector2(0.075, 0.075)
+	# La imagen trae cinco espadas: madera, piedra, metal, diamante y obsidiana.
+	match sword_level:
+		0: sword_display.region_rect = Rect2(42, 132, 350, 420)
+		1: sword_display.region_rect = Rect2(450, 132, 360, 420)
+		2, 3: sword_display.region_rect = Rect2(862, 132, 350, 420)
+		4: sword_display.region_rect = Rect2(170, 680, 380, 430)
+		_: sword_display.region_rect = Rect2(700, 680, 380, 430)
 
 func _move_player(delta: float) -> void:
 	var d := Vector2(Input.get_axis("ui_left", "ui_right"), Input.get_axis("ui_up", "ui_down"))
 	d.x += float(Input.is_key_pressed(KEY_D)) - float(Input.is_key_pressed(KEY_A))
 	d.y += float(Input.is_key_pressed(KEY_S)) - float(Input.is_key_pressed(KEY_W))
 	if d.length_squared() > 0: d = d.normalized()
+	if d.length_squared() > 0: facing = d
 	var next := player_pos + d * PLAYER_SPEED * delta
-	next.x = clampf(next.x, 20, WORLD.x - 20)
-	next.y = clampf(next.y, 30, WORLD.y - 20)
+	next.x = clampf(next.x, 165, WORLD.x - 165)
+	next.y = clampf(next.y, 165, WORLD.y - 165)
 	if not _blocked(Vector2(next.x, player_pos.y)): player_pos.x = next.x
 	if not _blocked(Vector2(player_pos.x, next.y)): player_pos.y = next.y
 
 func _blocked(p: Vector2) -> bool:
-	if p.x >= WORLD.x - 205: return true
-	if house_rect.grow(-8).has_point(p): return true
-	if market_rect.grow(-8).has_point(p): return true
-	if upgrade_rect.grow(-8).has_point(p): return true
+	if p.x < 165 or p.x > WORLD.x - 165 or p.y < 165 or p.y > WORLD.y - 165: return true
+	# Sólo se bloquea la base; así el personaje no puede entrar en un edificio ni un tronco.
+	if Rect2(HOUSE_POS - Vector2(52, 38), Vector2(104, 112)).has_point(p): return true
+	# Las tiendas usan la huella completa de sus sprites escalados, no sólo la puerta.
+	if Rect2(MARKET_POS - Vector2(86, 72), Vector2(172, 144)).has_point(p): return true
+	if Rect2(UPGRADE_POS - Vector2(86, 72), Vector2(172, 144)).has_point(p): return true
+	# Los tres corrales son sólidos: las cercas y los animales no se pueden atravesar.
+	if Rect2(Vector2(1650, 1040) - Vector2(70, 45), Vector2(140, 90)).grow(5).has_point(p): return true
+	if Rect2(Vector2(1980, 1040) - Vector2(65, 45), Vector2(130, 90)).grow(5).has_point(p): return true
+	if Rect2(Vector2(2020, 1450) - Vector2(70, 45), Vector2(140, 90)).grow(5).has_point(p): return true
 	for t in trees:
-		var tree_bounds := Rect2(t.pos - Vector2(18, 25) * t.scale, Vector2(36, 50) * t.scale)
-		if tree_bounds.grow(7).has_point(p): return true
+		var trunk := Rect2(t.pos + Vector2(-8, 9) * t.scale, Vector2(16, 17) * t.scale)
+		if trunk.grow(4).has_point(p): return true
 	for r in rocks:
 		if p.distance_to(r.pos) < r.r + 10: return true
 	return false
@@ -517,6 +713,7 @@ func _interact() -> void:
 				msg = "Sembraste %s. Madurará al pasar siete noches." % SEED_NAMES[selected_seed]
 			else: msg = "No tienes semillas de %s. Pulsa Q para cambiar de variedad." % SEED_NAMES[selected_seed]
 			msg_timer = 3
+			_refresh_hotbar()
 			return
 func _night_spawning(delta: float) -> void:
 	spawn_timer -= delta
@@ -541,16 +738,25 @@ func _move_enemies(delta: float) -> void:
 		var next: Vector2 = e.pos + vec * e.speed * delta
 		e.pos = next
 		e.attack = maxf(0, e.attack - delta)
-		if e.pos.distance_to(HOUSE_POS) < 68 and e.attack == 0:
-			house_hp = maxf(0, house_hp - (2.0 + day * 0.2))
-			e.attack = 1.3
+		if e.attack == 0:
+			if e.pos.distance_to(player_pos) < 46:
+				player_hp = maxf(0, player_hp - (12.0 + day * 0.7))
+				e.attack = 1.0
+				msg = "¡Te golpearon! Vida: %d/%d" % [int(player_hp), int(_max_player_hp())]
+				msg_timer = 1.2
+			elif e.pos.distance_to(HOUSE_POS) < 68:
+				house_hp = maxf(0, house_hp - (2.0 + day * 0.2))
+				e.attack = 1.3
 		enemies[i] = e
 		if e.hp <= 0: enemies.remove_at(i)
 	if house_hp <= 0:
 		_show_ending("lo has perdido todo, levantate y renace desde 0")
+	elif player_hp <= 0:
+		_show_ending("lo has perdido todo, levantate y renace desde 0")
 
 func _attack() -> void:
 	attack_cooldown = 0.42
+	sword_swing = 0.24
 	var reach := 80.0 + sword_level * 14.0
 	var defeated := false
 	for i in range(enemies.size() - 1, -1, -1):
@@ -568,6 +774,7 @@ func _attack() -> void:
 					msg = "¡El enemigo soltó semilla de %s! Próxima caída: 1/%d" % [SEED_NAMES[seed_id], _seed_drop_denominator()]
 					msg_timer = 3.0
 				enemies.remove_at(i)
+	_refresh_hotbar()
 	if not defeated:
 		msg = "¡Tajo! Espada nivel %d" % (sword_level + 1)
 		msg_timer = 1.2
@@ -585,6 +792,8 @@ func _buy_sword() -> void:
 		msg = "Mejoraste tu espada a %s." % SWORD_NAMES[sword_level]
 	else: msg = "La mejora cuesta %d monedas." % cost
 	msg_timer = 2.5
+	_refresh_hotbar()
+	_update_sword_display()
 	_refresh_popup()
 
 func _buy_fence() -> void:
@@ -604,8 +813,23 @@ func _buy_growth() -> void:
 	msg_timer = 2.5
 	_refresh_popup()
 
+func _buy_player_life() -> void:
+	var cost := 75 + player_life_level * 70
+	if coins >= cost and player_life_level < 10:
+		coins -= cost
+		player_life_level += 1
+		player_hp = _max_player_hp()
+		msg = "Vida máxima del jugador: %d." % int(_max_player_hp())
+	else:
+		msg = "Mejora de vida del jugador: %d monedas." % cost
+	msg_timer = 2.5
+	_refresh_popup()
+
 func _max_house_hp() -> float:
 	return 400.0 + life_level * 25.0
+
+func _max_player_hp() -> float:
+	return 500.0 + player_life_level * 100.0
 
 func _seed_drop_denominator() -> int:
 	var base_denominator := 20
@@ -634,20 +858,21 @@ func _restart_run() -> void:
 	start_screen.visible = false
 
 func _new_game() -> void:
-	day = 1; night_number = 0; night_elapsed = 0; coins = 24; seeds_found = 1; seed_counts = [1, 0, 0, 0]; produce_counts = [0, 0, 0, 0]; selected_seed = 0; planted.clear()
-	enemies.clear(); house_hp = 400; sword_level = 0; grow_level = 0; fence_level = 0; life_level = 0; drop_level = 0
-	player_pos = Vector2(1800, 1160); game_over = false; shop_open = false; is_night = false
+	day = 1; night_number = 0; night_elapsed = 0; coins = 24; seeds_found = 1; seed_counts = [1, 0, 0, 0]; produce_counts = [0, 0, 0, 0]; selected_seed = 0; sword_equipped = false; quick_slots = [ITEM_SWORD, 0, 1, 2, 3]; backpack_slots = [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]; planted.clear()
+	enemies.clear(); house_hp = 400; player_hp = 500; player_life_level = 0; sword_level = 0; grow_level = 0; fence_level = 0; life_level = 0; drop_level = 0
+	player_pos = Vector2(1700, 1230); game_over = false; shop_open = false; is_night = false
 	msg = "Empiezas con una semilla de tomate y una espada de madera."
 	msg_timer = 6
 	shop_open = false
 	popup_mode = ""
 	popup.visible = false
 	_generate_world()
+	_refresh_hotbar()
 
 func _update_hud() -> void:
 	if hud == null: return
 	var phase := "NOCHE (%ds)" % int(ceil(30.0 + night_number * 5.0 - night_elapsed)) if is_night else "DÍA (infinito)"
-	var status := "Casa %d/%d  ·  Monstruos Nv.%d" % [int(house_hp), int(_max_house_hp()), 1 + floori(float(day - 1) / 7.0)]
+	var status := "Casa %d/%d  ·  Vida %d/%d  ·  Monstruos Nv.%d" % [int(house_hp), int(_max_house_hp()), int(player_hp), int(_max_player_hp()), 1 + floori(float(day - 1) / 7.0)]
 	hud.text = "DÍA %d  ·  %s\nMonedas: %d  ·  Semillas: %d  ·  Plantaciones: %d\nSeleccionada: %s x%d  ·  Espada: %s\n%s\nWASD mover · E usar · I inventario · Q cambiar semilla · Espacio atacar" % [day, phase, coins, _total_seeds(), _total_produce(), SEED_NAMES[selected_seed], seed_counts[selected_seed], SWORD_NAMES[sword_level], status]
 	if not is_night and not game_over: hud.text += "\nE en la casa para avanzar a la noche"
 	if msg_timer > 0: hud.text += "\n" + msg
@@ -665,20 +890,20 @@ func _total_produce() -> int:
 
 func _draw() -> void:
 	if grass_texture:
-		var grass_tile := 974.0
-		for column in range(int(ceil(WORLD.x / grass_tile))):
-			for row in range(int(ceil(WORLD.y / grass_tile))):
-				var tile_width := minf(grass_tile, WORLD.x - column * grass_tile)
-				var tile_height := minf(grass_tile, WORLD.y - row * grass_tile)
-				var dest := Rect2(Vector2(column * grass_tile, row * grass_tile), Vector2(tile_width, tile_height))
-				draw_texture_rect_region(grass_texture, dest, Rect2(Vector2(146, 146), Vector2(tile_width, tile_height)))
+		# Se usa sólo el cuadro de césped, sin los márgenes blancos de la imagen entregada.
+		var grass_tile := Vector2(748, 808)
+		for column in range(int(ceil(WORLD.x / grass_tile.x))):
+			for row in range(int(ceil(WORLD.y / grass_tile.y))):
+				var tile_width := minf(grass_tile.x, WORLD.x - column * grass_tile.x)
+				var tile_height := minf(grass_tile.y, WORLD.y - row * grass_tile.y)
+				var dest := Rect2(Vector2(column * grass_tile.x, row * grass_tile.y), Vector2(tile_width, tile_height))
+				var source := Rect2(258, 230, 748 * tile_width / grass_tile.x, 808 * tile_height / grass_tile.y)
+				draw_texture_rect_region(grass_texture, dest, source)
 	else:
 		draw_rect(Rect2(Vector2.ZERO, WORLD), Color("527b43"))
-	# Los dos caminos se dibujan como parte del mundo para que queden bajo edificios y reciban la sombra nocturna.
-	for path_point in left_path_points:
-		draw_texture_rect_region(road_tile_texture, Rect2(path_point - Vector2(15, 16), Vector2(30, 32)), Rect2(258, 230, 750, 806))
-	for path_point in right_path_points:
-		draw_texture_rect_region(rock_path_texture, Rect2(path_point - Vector2(15, 16), Vector2(30, 32)), Rect2(258, 230, 750, 806))
+	# Sin caminos: los letreros cerca de la granja orientan hacia las dos tiendas.
+	_draw_sign(FARM_POS + Vector2(-155, 72), "← MEJORAS")
+	_draw_sign(FARM_POS + Vector2(155, -70), "MERCADO →")
 	# Plantación y casillas.
 	for i in range(6):
 		var p := FARM_POS + Vector2((i % 3) * 40 - 40, floori(float(i) / 3.0) * 42)
@@ -691,8 +916,7 @@ func _draw() -> void:
 			var row_y := 16 + crop_id * 32
 			var source := Rect2(128 + crop_id * 16, row_y, 16, 16) if age_days >= 7 else Rect2(clampi(int(g * 5.99), 0, 5) * 16, row_y, 16, 16)
 			draw_texture_rect_region(farm_sheet, Rect2(p - Vector2(15, 20), Vector2(30, 30)), source)
-	# Casa, mercado, cercas y objetos.
-	if house_sprite: draw_texture_rect(house_sprite, Rect2(HOUSE_POS - Vector2(60, 70), Vector2(120, 143)), false)
+	# Cercas y objetos. La casa se ordena abajo junto con jugador y árboles.
 	draw_rect(Rect2(UPGRADE_POS - Vector2(42, 25), Vector2(84, 52)), Color("775137"))
 	draw_colored_polygon(PackedVector2Array([UPGRADE_POS + Vector2(-50, -25), UPGRADE_POS + Vector2(0, -58), UPGRADE_POS + Vector2(50, -25)]), Color("426e82"))
 	draw_string(ThemeDB.fallback_font, UPGRADE_POS + Vector2(-31, -73), "MEJORAS", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color.WHITE)
@@ -711,14 +935,17 @@ func _draw() -> void:
 			draw_circle(item.pos, 11, Color(1.0, 0.8, 0.15, 0.25))
 			draw_colored_polygon(PackedVector2Array([item.pos + Vector2(0, -8), item.pos + Vector2(8, 0), item.pos + Vector2(0, 8), item.pos + Vector2(-8, 0)]), Color("ffe17b"))
 	var depth_items: Array[Dictionary] = []
+	depth_items.append({"depth": HOUSE_POS.y + 73, "kind": "house", "item": {}})
 	for tree in trees:
 		depth_items.append({"depth": tree.pos.y + 25 * tree.scale, "kind": "tree", "item": tree})
 	depth_items.append({"depth": player_pos.y + 20, "kind": "player", "item": {}})
 	for enemy in enemies:
-		depth_items.append({"depth": enemy.pos.y + 25, "kind": "enemy", "item": enemy})
+		depth_items.append({"depth": enemy.pos.y + 96, "kind": "enemy", "item": enemy})
 	depth_items.sort_custom(func(a, b): return float(a["depth"]) < float(b["depth"]))
 	for drawable in depth_items:
-		if drawable.kind == "tree":
+		if drawable.kind == "house":
+			if house_sprite: draw_texture_rect(house_sprite, Rect2(HOUSE_POS - Vector2(60, 70), Vector2(120, 143)), false)
+		elif drawable.kind == "tree":
 			var tree: Dictionary = drawable.item
 			if tree_sprite: draw_texture_rect(tree_sprite, Rect2(tree.pos - Vector2(18, 25) * tree.scale, Vector2(36, 50) * tree.scale), false)
 		elif drawable.kind == "player":
@@ -728,14 +955,20 @@ func _draw() -> void:
 			var pos: Vector2 = enemy.pos
 			var enemy_texture: Texture2D = orc_walk if enemy.kind in ["orc", "tung", "67"] else soldier_walk
 			var frame := int(Time.get_ticks_msec() / 150) % 8
-			if enemy_texture: draw_texture_rect_region(enemy_texture, Rect2(pos - Vector2(32, 34), Vector2(64, 64)), Rect2(frame * 100, 0, 100, 100))
-			else: draw_circle(pos, 16, Color("090d17"))
-			if enemy.kind == "tung": draw_string(ThemeDB.fallback_font, pos + Vector2(-19, -35), "TUNG", HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color("f2ccaa"))
-			elif enemy.kind == "67": draw_string(ThemeDB.fallback_font, pos + Vector2(-7, -35), "67", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color("ffffff"))
+			if enemy_texture: draw_texture_rect_region(enemy_texture, Rect2(pos - Vector2(72, 98), Vector2(144, 196)), Rect2(frame * 100, 0, 100, 100))
+			else: draw_circle(pos, 33, Color("090d17"))
+			if enemy.kind == "tung": draw_string(ThemeDB.fallback_font, pos + Vector2(-31, -100), "TUNG", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color("f2ccaa"))
+			elif enemy.kind == "67": draw_string(ThemeDB.fallback_font, pos + Vector2(-11, -100), "67", HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color("ffffff"))
 	if is_night:
 		draw_rect(Rect2(Vector2.ZERO, WORLD), Color(0.02, 0.03, 0.13, 0.31))
 		# Luz cálida alrededor de casa, estilo halo.
 		draw_circle(HOUSE_POS, 145, Color(1.0, 0.72, 0.3, 0.07))
+
+func _draw_sign(position: Vector2, caption: String) -> void:
+	draw_rect(Rect2(position + Vector2(-3, 10), Vector2(6, 26)), Color("4d3019"))
+	draw_rect(Rect2(position + Vector2(-52, -17), Vector2(104, 29)), Color("6c4525"))
+	draw_rect(Rect2(position + Vector2(-49, -14), Vector2(98, 23)), Color("a66b37"))
+	draw_string(ThemeDB.fallback_font, position + Vector2(-43, 2), caption, HORIZONTAL_ALIGNMENT_CENTER, 86, 11, Color("fff0c2"))
 
 func _draw_corral(center: Vector2, size: Vector2, animal_count: int) -> void:
 	draw_rect(Rect2(center - size / 2, size), Color(0.26, 0.43, 0.24, 0.36))
