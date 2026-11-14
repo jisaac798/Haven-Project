@@ -65,6 +65,7 @@ var road_sprite: Texture2D
 var shop_sprite: Texture2D
 var orc_walk: Texture2D
 var soldier_walk: Texture2D
+var brainrot_sheet: Texture2D
 var chicken_sprite: Texture2D
 var grass_texture: Texture2D
 var road_tile_texture: Texture2D
@@ -469,7 +470,7 @@ func _load_art() -> void:
 		if ResourceLoader.exists(p): walk_frames.append(load(p))
 	farm_sheet = load("res://assets/Objects/Spring Crops.png")
 	sword_texture = load("res://assets/Objects/Espadas.png")
-	house_sprite = load("res://assets/Objects/House_03.png")
+	house_sprite = _load_keyed_texture("res://assets/Objects/Casita.png")
 	tree_sprite = load("res://assets/Objects/Maple Tree_01.png")
 	fence_sprite = load("res://assets/Objects/Fence's copiar_01.png")
 	road_sprite = load("res://assets/Objects/Road copiar_01.png")
@@ -477,8 +478,23 @@ func _load_art() -> void:
 	shop_sprite = load("res://assets/Shop/merchant.png")
 	orc_walk = load("res://assets/Enemies/Orc_Walk.png")
 	soldier_walk = load("res://assets/Enemies/Soldier_Walk.png")
+	brainrot_sheet = _load_keyed_texture("res://assets/Enemies/Brainrot.png")
 	chicken_sprite = load("res://assets/Farm Animals/Baby Chicken Yellow_01.png")
 	grass_texture = load("res://assets/Objects/Grass Mundo.png")
+
+func _load_keyed_texture(path: String) -> Texture2D:
+	var image := Image.load_from_file(path)
+	if image == null: return null
+	# El archivo original es RGB; se convierte a RGBA antes de modificar transparencia.
+	image.convert(Image.FORMAT_RGBA8)
+	# El sprite entregado tiene fondo blanco; se conserva el dibujo y se vuelve transparente sólo ese fondo.
+	for y in range(image.get_height()):
+		for x in range(image.get_width()):
+			var pixel := image.get_pixel(x, y)
+			if pixel.r > 0.94 and pixel.g > 0.94 and pixel.b > 0.94:
+				pixel.a = 0.0
+				image.set_pixel(x, y, pixel)
+	return ImageTexture.create_from_image(image)
 
 func _sample_path(points: Array, spacing: float) -> PackedVector2Array:
 	var samples := PackedVector2Array()
@@ -944,7 +960,7 @@ func _draw() -> void:
 	depth_items.sort_custom(func(a, b): return float(a["depth"]) < float(b["depth"]))
 	for drawable in depth_items:
 		if drawable.kind == "house":
-			if house_sprite: draw_texture_rect(house_sprite, Rect2(HOUSE_POS - Vector2(60, 70), Vector2(120, 143)), false)
+			if house_sprite: draw_texture_rect(house_sprite, Rect2(HOUSE_POS - Vector2(110, 125), Vector2(220, 250)), false)
 		elif drawable.kind == "tree":
 			var tree: Dictionary = drawable.item
 			if tree_sprite: draw_texture_rect(tree_sprite, Rect2(tree.pos - Vector2(18, 25) * tree.scale, Vector2(36, 50) * tree.scale), false)
@@ -953,9 +969,14 @@ func _draw() -> void:
 		else:
 			var enemy: Dictionary = drawable.item
 			var pos: Vector2 = enemy.pos
-			var enemy_texture: Texture2D = orc_walk if enemy.kind in ["orc", "tung", "67"] else soldier_walk
+			var enemy_texture: Texture2D = brainrot_sheet if brainrot_sheet else (orc_walk if enemy.kind in ["orc", "tung", "67"] else soldier_walk)
 			var frame := int(Time.get_ticks_msec() / 150) % 8
-			if enemy_texture: draw_texture_rect_region(enemy_texture, Rect2(pos - Vector2(72, 98), Vector2(144, 196)), Rect2(frame * 100, 0, 100, 100))
+			var brainrot_row := 0
+			if enemy.kind == "soldier" or enemy.kind == "tung": brainrot_row = 1
+			elif enemy.kind == "67": brainrot_row = 2
+			var source := Rect2(frame * 158, [140, 500, 860][brainrot_row], 158, [295, 270, 265][brainrot_row]) if brainrot_sheet else Rect2(frame * 100, 0, 100, 100)
+			var size := Vector2(56, 84) if brainrot_sheet else Vector2(144, 196)
+			if enemy_texture: draw_texture_rect_region(enemy_texture, Rect2(pos - size / 2, size), source)
 			else: draw_circle(pos, 33, Color("090d17"))
 			if enemy.kind == "tung": draw_string(ThemeDB.fallback_font, pos + Vector2(-31, -100), "TUNG", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color("f2ccaa"))
 			elif enemy.kind == "67": draw_string(ThemeDB.fallback_font, pos + Vector2(-11, -100), "67", HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color("ffffff"))
