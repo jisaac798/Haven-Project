@@ -16,6 +16,8 @@ const SWORD_PRICES: Array[int] = [60, 140, 300, 650, 1400]
 const LIBERTY_COST := 12000
 const HOTBAR_SLOTS := 5
 const ITEM_SWORD := 4
+const CASITA_SOURCE: Texture2D = preload("res://assets/Objects/Casita.png")
+const BRAINROT_SOURCE: Texture2D = preload("res://assets/Enemies/Brainrot.png")
 
 var rng := RandomNumberGenerator.new()
 var player_pos := Vector2(1700, 1230)
@@ -470,7 +472,7 @@ func _load_art() -> void:
 		if ResourceLoader.exists(p): walk_frames.append(load(p))
 	farm_sheet = load("res://assets/Objects/Spring Crops.png")
 	sword_texture = load("res://assets/Objects/Espadas.png")
-	house_sprite = _load_keyed_texture("res://assets/Objects/Casita.png")
+	house_sprite = _load_keyed_texture(CASITA_SOURCE)
 	tree_sprite = load("res://assets/Objects/Maple Tree_01.png")
 	fence_sprite = load("res://assets/Objects/Fence's copiar_01.png")
 	road_sprite = load("res://assets/Objects/Road copiar_01.png")
@@ -478,22 +480,41 @@ func _load_art() -> void:
 	shop_sprite = load("res://assets/Shop/merchant.png")
 	orc_walk = load("res://assets/Enemies/Orc_Walk.png")
 	soldier_walk = load("res://assets/Enemies/Soldier_Walk.png")
-	brainrot_sheet = _load_keyed_texture("res://assets/Enemies/Brainrot.png")
+	brainrot_sheet = _load_keyed_texture(BRAINROT_SOURCE)
 	chicken_sprite = load("res://assets/Farm Animals/Baby Chicken Yellow_01.png")
 	grass_texture = load("res://assets/Objects/Grass Mundo.png")
 
-func _load_keyed_texture(path: String) -> Texture2D:
-	var image := Image.load_from_file(path)
-	if image == null: return null
-	# El archivo original es RGB; se convierte a RGBA antes de modificar transparencia.
+func _load_keyed_texture(source_texture: Texture2D) -> Texture2D:
+	# El preload y el acceso a la textura importada conservan el recurso dentro del PCK exportado.
+	if source_texture == null: return null
+	var image := source_texture.get_image()
+	if image == null or image.is_empty(): return source_texture
 	image.convert(Image.FORMAT_RGBA8)
-	# El sprite entregado tiene fondo blanco; se conserva el dibujo y se vuelve transparente sólo ese fondo.
-	for y in range(image.get_height()):
-		for x in range(image.get_width()):
-			var pixel := image.get_pixel(x, y)
-			if pixel.r > 0.94 and pixel.g > 0.94 and pixel.b > 0.94:
-				pixel.a = 0.0
-				image.set_pixel(x, y, pixel)
+	# Quita el fondo blanco y gris claro conectado a los bordes, pero preserva ojos y brillos internos.
+	var width := image.get_width()
+	var height := image.get_height()
+	var pending: Array[Vector2i] = []
+	for x in range(width):
+		pending.append(Vector2i(x, 0))
+		pending.append(Vector2i(x, height - 1))
+	for y in range(1, height - 1):
+		pending.append(Vector2i(0, y))
+		pending.append(Vector2i(width - 1, y))
+	var cursor := 0
+	while cursor < pending.size():
+		var point := pending[cursor]
+		cursor += 1
+		var pixel := image.get_pixelv(point)
+		if pixel.a == 0.0: continue
+		var darkest := minf(pixel.r, minf(pixel.g, pixel.b))
+		var brightest := maxf(pixel.r, maxf(pixel.g, pixel.b))
+		if darkest < 0.68 or brightest - darkest > 0.12: continue
+		pixel.a = 0.0
+		image.set_pixelv(point, pixel)
+		if point.x > 0: pending.append(point + Vector2i.LEFT)
+		if point.x < width - 1: pending.append(point + Vector2i.RIGHT)
+		if point.y > 0: pending.append(point + Vector2i.UP)
+		if point.y < height - 1: pending.append(point + Vector2i.DOWN)
 	return ImageTexture.create_from_image(image)
 
 func _sample_path(points: Array, spacing: float) -> PackedVector2Array:
