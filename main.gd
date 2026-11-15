@@ -16,6 +16,8 @@ const SWORD_PRICES: Array[int] = [60, 140, 300, 650, 1400]
 const LIBERTY_COST := 12000
 const HOTBAR_SLOTS := 5
 const ITEM_SWORD := 4
+const GARDEN_PLOT_COST := 25
+const ENEMY_HOUSE_SPAWN_CLEARANCE := 300.0
 const CASITA_SOURCE: Texture2D = preload("res://assets/Objects/Casita.png")
 const BRAINROT_SOURCE: Texture2D = preload("res://assets/Enemies/Brainrot.png")
 
@@ -52,6 +54,10 @@ var harvest_total := 0
 var attack_cooldown := 0.0
 var sword_swing := 0.0
 var facing := Vector2(0, 1)
+var player_animation_time := 0.0
+var player_animation_frame := -1
+var player_animation_direction := ""
+var player_animation_walking := false
 var spawn_timer := 0.0
 var msg := "Empiezas con una semilla. Siembra junto a tu granja."
 var msg_timer := 6.0
@@ -79,6 +85,11 @@ var camera: Camera2D
 var market_display: Sprite2D
 var upgrades_display: Sprite2D
 var hud: Label
+var player_health_bar: ProgressBar
+var house_health_bar: ProgressBar
+var player_health_label: Label
+var house_health_label: Label
+var message_label: Label
 var hotbar: HBoxContainer
 var hotbar_cells: Array[PanelContainer] = []
 var ambient_music: AudioStreamPlayer
@@ -158,17 +169,34 @@ func _ready() -> void:
 	_create_audio()
 	hud = Label.new()
 	hud.position = Vector2(14, 10)
+	hud.size = Vector2(772, 24)
 	hud.add_theme_font_size_override("font_size", 15)
 	hud.add_theme_color_override("font_color", Color("fff5d6"))
 	hud.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.8))
 	hud.add_theme_constant_override("shadow_offset_x", 2)
 	hud.add_theme_constant_override("shadow_offset_y", 2)
 	layer.add_child(hud)
+	player_health_bar = _create_health_bar(layer, Vector2(14, 40), Color("d94c46"))
+	player_health_label = player_health_bar.get_node("ValueLabel") as Label
+	house_health_bar = _create_health_bar(layer, Vector2(14, 66), Color("e0ac4e"))
+	house_health_label = house_health_bar.get_node("ValueLabel") as Label
+	message_label = Label.new()
+	message_label.position = Vector2(14, 92)
+	message_label.size = Vector2(760, 28)
+	message_label.add_theme_font_size_override("font_size", 14)
+	message_label.add_theme_color_override("font_color", Color("fff5d6"))
+	message_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.85))
+	message_label.add_theme_constant_override("shadow_offset_x", 2)
+	message_label.add_theme_constant_override("shadow_offset_y", 2)
+	layer.add_child(message_label)
 	_create_popup(layer)
 	_create_hotbar(layer)
 	_create_splash(layer)
 	hud.visible = false
-	_show_splash("Granja Sombría", "Cuida tu granja, planta cultivos y sobrevive a las noches.", "Jugar", _start_game)
+	player_health_bar.visible = false
+	house_health_bar.visible = false
+	message_label.visible = false
+	_show_splash("Granja Sombría", "Cuida tu granja, planta cultivos y sobrevive a las noches.", "Jugar", _show_objective_tutorial)
 	_update_hud()
 
 func _create_popup(layer: CanvasLayer) -> void:
@@ -213,6 +241,31 @@ func _create_popup(layer: CanvasLayer) -> void:
 	popup_buttons.add_theme_constant_override("separation", 8)
 	popup_scroll.add_child(popup_buttons)
 
+func _create_health_bar(layer: CanvasLayer, position: Vector2, fill_color: Color) -> ProgressBar:
+	var bar := ProgressBar.new()
+	bar.position = position
+	bar.size = Vector2(220, 22)
+	bar.min_value = 0
+	bar.show_percentage = false
+	var background := StyleBoxFlat.new()
+	background.bg_color = Color("202a27")
+	background.set_corner_radius_all(4)
+	var fill := StyleBoxFlat.new()
+	fill.bg_color = fill_color
+	fill.set_corner_radius_all(4)
+	bar.add_theme_stylebox_override("background", background)
+	bar.add_theme_stylebox_override("fill", fill)
+	layer.add_child(bar)
+	var value_label := Label.new()
+	value_label.name = "ValueLabel"
+	value_label.set_anchors_preset(Control.PRESET_FULL_RECT)
+	value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	value_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	value_label.add_theme_font_size_override("font_size", 12)
+	value_label.add_theme_color_override("font_color", Color.WHITE)
+	bar.add_child(value_label)
+	return bar
+
 func _create_splash(layer: CanvasLayer) -> void:
 	start_screen = ColorRect.new()
 	start_screen.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -223,7 +276,7 @@ func _create_splash(layer: CanvasLayer) -> void:
 	center.set_anchors_preset(Control.PRESET_FULL_RECT)
 	start_screen.add_child(center)
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(520, 300)
+	panel.custom_minimum_size = Vector2(620, 400)
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color("202a27")
 	style.border_color = Color("d8ad66")
@@ -265,10 +318,29 @@ func _show_splash(title: String, body: String, button_text: String, action: Call
 func _on_splash_button() -> void:
 	if splash_action.is_valid(): splash_action.call()
 
+func _show_objective_tutorial() -> void:
+	_show_splash(
+		"Objetivo",
+		"Mantén tu granja y sobrevive a los monstruos que aparecen por la noche. Cultiva y vende tus cosechas para reunir el dinero necesario para irte y empezar una nueva vida.",
+		"Entendido",
+		_show_controls_tutorial
+	)
+
+func _show_controls_tutorial() -> void:
+	_show_splash(
+		"Controles",
+		"WASD o flechas: moverte\nE: interactuar, sembrar y cosechar\nC: construir una parcela junto al huerto (25 monedas)\n1–5: seleccionar objeto · 0: manos vacías\nQ: cambiar semilla · Espacio: atacar con la espada\nI: abrir el inventario · Esc: cerrar una ventana",
+		"Entendido",
+		_start_game
+	)
+
 func _start_game() -> void:
 	started = true
 	start_screen.visible = false
 	hud.visible = true
+	player_health_bar.visible = true
+	house_health_bar.visible = true
+	message_label.visible = true
 	msg = "Empiezas con una semilla de tomate y una espada de madera."
 	msg_timer = 6
 	_update_hud()
@@ -587,6 +659,7 @@ func _process(delta: float) -> void:
 			msg_timer = 5.0
 	else:
 		house_hp = minf(_max_house_hp(), house_hp + delta * 1.25)
+	var previous_player_pos := player_pos
 	if not shop_open: _move_player(delta)
 	camera.position = player_pos
 	_update_sword_display()
@@ -598,7 +671,7 @@ func _process(delta: float) -> void:
 		else:
 			msg = "Equipa la espada con la tecla 1 antes de atacar."
 			msg_timer = 1.4
-	_animate_player()
+	_animate_player(delta, player_pos - previous_player_pos)
 	var night_tint := Color(0.48, 0.52, 0.66) if is_night else Color.WHITE
 	market_display.modulate = night_tint
 	upgrades_display.modulate = night_tint
@@ -623,6 +696,9 @@ func _input(event: InputEvent) -> void:
 		return
 	if event.keycode == KEY_Q and not shop_open:
 		_cycle_seed()
+		return
+	if event.keycode == KEY_C and not shop_open:
+		_build_garden_plot()
 		return
 	if event.keycode == KEY_E and not shop_open:
 		_interact()
@@ -708,11 +784,59 @@ func _blocked(p: Vector2) -> bool:
 		if p.distance_to(r.pos) < r.r + 10: return true
 	return false
 
-func _animate_player() -> void:
+func _animate_player(delta: float, movement: Vector2) -> void:
 	if player_sprite == null: return
-	var moving := Input.get_vector("ui_left", "ui_right", "ui_up", "ui_down").length() > 0 or Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_D)
-	if moving and not walk_frames.is_empty(): player_sprite.texture = walk_frames[int(Time.get_ticks_msec() / 65) % walk_frames.size()]
-	elif not idle_frames.is_empty(): player_sprite.texture = idle_frames[int(Time.get_ticks_msec() / 120) % idle_frames.size()]
+	var previous_direction := player_animation_direction
+	var moving := movement.length_squared() > 0.01
+	if moving:
+		facing = movement.normalized()
+		if absf(movement.x) > absf(movement.y):
+			player_animation_direction = "right" if movement.x > 0 else "left"
+		else:
+			player_animation_direction = "down" if movement.y > 0 else "up"
+	var frames: Array[Texture2D] = walk_frames if moving and not walk_frames.is_empty() else idle_frames
+	if frames.is_empty(): return
+	var use_walk := moving and not walk_frames.is_empty()
+	var frame_start := 0
+	var frame_count := 4
+	if use_walk:
+		frame_count = 6
+		match player_animation_direction:
+			"up": frame_start = 6
+			"right", "left": frame_start = 12
+			_: frame_start = 0
+	else:
+		match player_animation_direction:
+			"up": frame_start = 4
+			"right", "left": frame_start = 8
+			_: frame_start = 0
+	player_sprite.flip_h = player_animation_direction == "left"
+	var direction_changed := previous_direction != player_animation_direction
+	var changed := moving != player_animation_walking or direction_changed or player_animation_frame < 0
+	if changed:
+		player_animation_walking = moving
+		player_animation_time = 0.0
+		player_animation_frame = 0
+		player_sprite.texture = frames[frame_start]
+		return
+	player_animation_time += delta
+	var frame_duration := 0.075 if moving else 0.14
+	if player_animation_time >= frame_duration:
+		player_animation_time = fmod(player_animation_time, frame_duration)
+		player_animation_frame = (player_animation_frame + 1) % frame_count
+		player_sprite.texture = frames[frame_start + player_animation_frame]
+
+func _build_garden_plot() -> void:
+	if player_pos.distance_to(FARM_POS) >= 200:
+		msg = "Acércate al huerto para construir una parcela."
+	elif coins < GARDEN_PLOT_COST:
+		msg = "Necesitas %d monedas para ampliar el huerto." % GARDEN_PLOT_COST
+	else:
+		coins -= GARDEN_PLOT_COST
+		planted.append(null)
+		msg = "Construiste una parcela nueva para tu huerto."
+	msg_timer = 3.0
+	queue_redraw()
 
 func _interact() -> void:
 	if player_pos.distance_to(MARKET_POS) < 145:
@@ -732,8 +856,8 @@ func _interact() -> void:
 			msg = "La casa está bajo ataque. Sobrevive hasta el amanecer."
 			msg_timer = 3
 		return
-	for i in range(6):
-		var p := FARM_POS + Vector2((i % 3) * 40 - 40, floori(float(i) / 3.0) * 42)
+	for i in range(planted.size()):
+		var p := _garden_plot_position(i)
 		if player_pos.distance_to(p) < 42:
 			if planted[i] != null and planted[i].growth >= 7:
 				var crop_id: int = planted[i].crop
@@ -752,13 +876,25 @@ func _interact() -> void:
 			msg_timer = 3
 			_refresh_hotbar()
 			return
+
+func _garden_plot_position(index: int) -> Vector2:
+	return FARM_POS + Vector2((index % 3) * 40 - 40, floori(float(index) / 3.0) * 42)
 func _night_spawning(delta: float) -> void:
 	spawn_timer -= delta
 	var max_enemies := 2 + day
 	if spawn_timer <= 0 and enemies.size() < max_enemies:
-		var p := player_pos + Vector2(rng.randf_range(-310, 310), rng.randf_range(-240, 240))
-		p.x = clampf(p.x, 30, WORLD.x - 30)
-		p.y = clampf(p.y, 30, WORLD.y - 30)
+		var p := Vector2.ZERO
+		var spawn_found := false
+		for attempt in range(32):
+			p = player_pos + Vector2(rng.randf_range(-310, 310), rng.randf_range(-240, 240))
+			p.x = clampf(p.x, 30, WORLD.x - 30)
+			p.y = clampf(p.y, 30, WORLD.y - 30)
+			if p.distance_to(HOUSE_POS) >= ENEMY_HOUSE_SPAWN_CLEARANCE:
+				spawn_found = true
+				break
+		if not spawn_found:
+			var fallback_direction := Vector2.RIGHT.rotated(rng.randf_range(0.0, TAU))
+			p = HOUSE_POS + fallback_direction * ENEMY_HOUSE_SPAWN_CLEARANCE
 		var roll := rng.randi_range(1, 100)
 		var kind := "orc" if rng.randf() < 0.5 else "soldier"
 		if roll == 67: kind = "67"
@@ -892,12 +1028,16 @@ func _restart_run() -> void:
 	_new_game()
 	started = true
 	hud.visible = true
+	player_health_bar.visible = true
+	house_health_bar.visible = true
+	message_label.visible = true
 	start_screen.visible = false
 
 func _new_game() -> void:
 	day = 1; night_number = 0; night_elapsed = 0; coins = 24; seeds_found = 1; seed_counts = [1, 0, 0, 0]; produce_counts = [0, 0, 0, 0]; selected_seed = 0; sword_equipped = false; quick_slots = [ITEM_SWORD, 0, 1, 2, 3]; backpack_slots = [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]; planted.clear()
 	enemies.clear(); house_hp = 400; player_hp = 500; player_life_level = 0; sword_level = 0; grow_level = 0; fence_level = 0; life_level = 0; drop_level = 0
 	player_pos = Vector2(1700, 1230); game_over = false; shop_open = false; is_night = false
+	facing = Vector2(0, 1); player_animation_time = 0.0; player_animation_frame = -1; player_animation_direction = ""; player_animation_walking = false
 	msg = "Empiezas con una semilla de tomate y una espada de madera."
 	msg_timer = 6
 	shop_open = false
@@ -909,11 +1049,15 @@ func _new_game() -> void:
 func _update_hud() -> void:
 	if hud == null: return
 	var phase := "NOCHE (%ds)" % int(ceil(30.0 + night_number * 5.0 - night_elapsed)) if is_night else "DÍA (infinito)"
-	var status := "Casa %d/%d  ·  Vida %d/%d  ·  Monstruos Nv.%d" % [int(house_hp), int(_max_house_hp()), int(player_hp), int(_max_player_hp()), 1 + floori(float(day - 1) / 7.0)]
-	hud.text = "DÍA %d  ·  %s\nMonedas: %d  ·  Semillas: %d  ·  Plantaciones: %d\nSeleccionada: %s x%d  ·  Espada: %s\n%s\nWASD mover · E usar · I inventario · Q cambiar semilla · Espacio atacar" % [day, phase, coins, _total_seeds(), _total_produce(), SEED_NAMES[selected_seed], seed_counts[selected_seed], SWORD_NAMES[sword_level], status]
-	if not is_night and not game_over: hud.text += "\nE en la casa para avanzar a la noche"
-	if msg_timer > 0: hud.text += "\n" + msg
-	if game_over: hud.text += "\n\nFIN DE LA PARTIDA · Pulsa ENTER para volver a empezar"
+	hud.text = "DÍA %d · %s    Semillas: %d (%s: %d)    Monedas: %d" % [day, phase, _total_seeds(), SEED_NAMES[selected_seed], seed_counts[selected_seed], coins]
+	player_health_bar.max_value = _max_player_hp()
+	player_health_bar.value = player_hp
+	player_health_label.text = "Jugador  %d / %d" % [int(player_hp), int(_max_player_hp())]
+	house_health_bar.max_value = _max_house_hp()
+	house_health_bar.value = house_hp
+	house_health_label.text = "Granja  %d / %d" % [int(house_hp), int(_max_house_hp())]
+	message_label.text = msg if msg_timer > 0 and not game_over else ""
+	message_label.visible = started and msg_timer > 0 and not game_over
 
 func _total_seeds() -> int:
 	var total := 0
@@ -942,8 +1086,8 @@ func _draw() -> void:
 	_draw_sign(FARM_POS + Vector2(-155, 72), "← MEJORAS")
 	_draw_sign(FARM_POS + Vector2(155, -70), "MERCADO →")
 	# Plantación y casillas.
-	for i in range(6):
-		var p := FARM_POS + Vector2((i % 3) * 40 - 40, floori(float(i) / 3.0) * 42)
+	for i in range(planted.size()):
+		var p := _garden_plot_position(i)
 		draw_rect(Rect2(p - Vector2(15, 14), Vector2(30, 28)), Color("79523a"))
 		draw_rect(Rect2(p - Vector2(12, 11), Vector2(24, 22)), Color("95633e"))
 		if planted[i] != null:
@@ -986,7 +1130,13 @@ func _draw() -> void:
 			var tree: Dictionary = drawable.item
 			if tree_sprite: draw_texture_rect(tree_sprite, Rect2(tree.pos - Vector2(18, 25) * tree.scale, Vector2(36, 50) * tree.scale), false)
 		elif drawable.kind == "player":
-			if player_sprite.texture: draw_texture_rect(player_sprite.texture, Rect2(player_pos - Vector2(12, 20), Vector2(24, 40)), false)
+			if player_sprite.texture:
+				if player_animation_direction == "left":
+					draw_set_transform(player_pos, 0.0, Vector2(-1, 1))
+					draw_texture_rect(player_sprite.texture, Rect2(Vector2(-12, -20), Vector2(24, 40)), false)
+					draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+				else:
+					draw_texture_rect(player_sprite.texture, Rect2(player_pos - Vector2(12, 20), Vector2(24, 40)), false)
 		else:
 			var enemy: Dictionary = drawable.item
 			var pos: Vector2 = enemy.pos
@@ -995,7 +1145,9 @@ func _draw() -> void:
 			var brainrot_row := 0
 			if enemy.kind == "soldier" or enemy.kind == "tung": brainrot_row = 1
 			elif enemy.kind == "67": brainrot_row = 2
-			var source := Rect2(frame * 158, [140, 500, 860][brainrot_row], 158, [295, 270, 265][brainrot_row]) if brainrot_sheet else Rect2(frame * 100, 0, 100, 100)
+			# Recorta los márgenes vacíos de cada fila para que el pez no quede reducido
+			# dentro del mismo tamaño de dibujo que los otros enemigos.
+			var source := Rect2(frame * 158, [162, 510, 883][brainrot_row], 158, [255, 241, 202][brainrot_row]) if brainrot_sheet else Rect2(frame * 100, 0, 100, 100)
 			var size := Vector2(56, 84) if brainrot_sheet else Vector2(144, 196)
 			if enemy_texture: draw_texture_rect_region(enemy_texture, Rect2(pos - size / 2, size), source)
 			else: draw_circle(pos, 33, Color("090d17"))
